@@ -41,8 +41,7 @@ pub const FQWriter = struct {
 };
 
 pub const FQReader = struct {
-    pub const FQRecord = struct { name: []const u8 = undefined, seq: []const u8 = undefined, qual: []const u8 = undefined };
-
+    pub const FQRecord = struct { name: []const u8 = &.{}, seq: []const u8 = &.{}, qual: []const u8 = &.{} };
     arena: std.heap.ArenaAllocator,
     reader: *std.Io.Reader,
 
@@ -50,106 +49,131 @@ pub const FQReader = struct {
         return .{ .arena = .init(allocator), .reader = reader };
     }
 
-    pub fn next(self: *FQReader) !FQRecord {
-        self.arena.reset(.retain_capacity);
+    pub fn deinit(self: *FQReader) void {
+        self.arena.deinit();
+    }
+
+    pub fn next(self: *FQReader) !?FQRecord {
+        _ = self.arena.reset(.retain_capacity);
         const format: seq.SeqContianer = switch (try self.reader.takeByte()) {
             '@' => .fastq,
             '>' => .fasta,
-            else => return error.RecordParseError,
+            else => |c| {
+                std.debug.print("Invalid first byte: {d}\n", .{c});
+                return error.RecordParseError;
+            },
         };
         var name_writer: std.Io.Writer.Allocating = .init(self.arena.allocator());
         var seq_writer: std.Io.Writer.Allocating = .init(self.arena.allocator());
         var qual_writer: std.Io.Writer.Allocating = .init(self.arena.allocator());
-        try self.reader.streamDelimiter(&name_writer, '\n');
+        _ = try self.reader.streamDelimiterEnding(&name_writer.writer, '\n');
+        self.reader.toss(1);
 
-        var seq_line_count: u32 = 0;
-        var qual_line_count: u32 = 0;
+        var qual_line_count: usize = 0;
 
+        var seq_line_count: usize = 0;
         var seq_number_bases: usize = 0;
         var qual_number_bases: usize = 0;
 
-        //var bytes_per_line: usize = 0;
-        var bytes_per_line_expected: ?usize = null;
-
-        //var bases_per_line: usize = 0;
         var bases_per_line_expected: ?usize = null;
 
-        var process_state: enum {
-            seq,
-            qual,
-        } = .seq;
+        var bases_per_line: usize = 0;
 
-        while (true) finish: {
-            switch (try self.reader.peekByte()) {
+        while (true) {
+            switch (self.reader.peekByte() catch |err| switch (err) {
+                error.EndOfStream => return null,
+                else => return err,
+            }) {
                 '+' => {
                     _ = try self.reader.takeDelimiter('\n');
                     while (true) {
                         if (qual_number_bases == seq_number_bases) {
                             if (seq_line_count != qual_line_count) return error.RecordParseError;
-                            break :finish;
-                        } else if (self.qual_number_bases > self.seq_number_bases) {
+                            return .{
+                                .name = name_writer.written(),
+                                .seq = seq_writer.written(),
+                                .qual = qual_writer.written(),
+                            };
+                        } else if (qual_number_bases > seq_number_bases) {
                             return error.RecordParseError;
                         }
-                        //if (qual_line_count > 0) {
-                        //    if (bytes_per_line_expected) |count| {
-                        //        if (bytes_per_line != count) return error.RecordParseError;
-                        //    } else return error.RecordParseError;
-                        //    if (bases_per_line_expected) |count| {
-                        //        if (bases_per_line != count) return error.RecordParseError;
-                        //    } else return error.RecordParseError;
-                        //}
+
+                        if (qual_line_count > 0) {
+                            if (bases_per_line_expected) |count| {
+                                if (bases_per_line != count) return error.RecordParseError;
+                            } else return error.RecordParseError;
+                        }
+
+                        qual_line_count += 1;
+
+                        const last_len = qual_writer.written().len;
+                        _ = try self.reader.streamDelimiterEnding(&qual_writer.writer, '\n');
+                        self.reader.toss(1);
+                        qual_writer.shrinkRetainingCapacity(std.mem.trimEnd(u8, qual_writer.written(), &std.ascii.whitespace).len);
+
+                        bases_per_line = (qual_writer.written().len - last_len);
+                        qual_number_bases += bases_per_line;
                     }
                 },
                 '>' => {
                     if (format == .fastq)
                         return error.RecordParseError;
-                    break :finish;
+                    return .{
+                        .name = name_writer.written(),
+                        .seq = seq_writer.written(),
+                        .qual = qual_writer.written(),
+                    };
                 },
-                _ => {},
+                else => {},
             }
-            seq_line_count += 1;
-            const bytes_read = try self.reader.streamDelimiter(&seq_writer, '\n');
-            var written_buf = seq_writer.written();
-            const buffer_trimmed_len = std.mem.trimEnd(u8, written_buf, &std.ascii.whitespace).len;
-            seq_writer.shrinkRetainingCapacity(buffer_trimmed_len);
-
-            const bytes_per_line = bytes_read;
-            const bases_per_line = bytes_read - (written_buf.len - buffer_trimmed_len);
-            seq_number_bases += buffer_trimmed_len;
-
             if (seq_line_count > 0) {
-                // we're onto the next line need to check line_counts
-                if (bytes_per_line_expected) |count| {
-                    if (bytes_per_line != count) return error.RecordParseError;
-                } else bytes_per_line_expected = bytes_per_line;
                 if (bases_per_line_expected) |count| {
                     if (bases_per_line != count) return error.RecordParseError;
                 } else bases_per_line_expected = bases_per_line;
             }
+            seq_line_count += 1;
+
+            const prev_written_len = seq_writer.written().len;
+            _ = try self.reader.streamDelimiterEnding(&seq_writer.writer, '\n');
+            self.reader.toss(1);
+            seq_writer.shrinkRetainingCapacity(std.mem.trimEnd(u8, seq_writer.written(), &std.ascii.whitespace).len);
+
+            bases_per_line = (seq_writer.written().len - prev_written_len);
+            seq_number_bases += bases_per_line;
         }
-
-        self.current = .{
-            .name = try name_writer.written(),
-        };
-
-        //while (true) {
-        //    switch (self.state) {
-        //        .start => {
-        //            if (self.current) |rec| {
-        //                self.current = null;
-        //                return rec;
-        //            } else {}
-        //        },
-        //        .name => {
-        //            var name_writer: std.Io.Writer.Allocating = .init(self.arena.allocator());
-        //            try self.reader.streamDelimiter(&name_writer, '\n');
-        //            self.current = .{
-        //                .name = try name_writer.toOwnedSlice(),
-        //            };
-        //            self.state = .seq;
-        //        },
-        //    }
-        //}
-        return .{};
     }
 };
+
+test "read fq scanner" {
+    const file = @embedFile("./test/t1.fq");
+    const TestCase = struct { name: []const u8, sequence: []const u8, quality: []const u8 };
+    var reader: std.Io.Reader = .fixed(file[0..]);
+    var fqReader: FQReader = .init(std.testing.allocator, &reader);
+    defer fqReader.deinit();
+
+    // zig fmt: off
+    const test_cases =
+        [_]TestCase{ 
+        .{ 
+            .name = "HWI-D00523:240:HF3WGBCXX:1:1101:2574:2226 1:N:0:CTGTAG", 
+            .sequence = "TGAGGAATATTGGTCAATGGGCGCGAGCCTGAACCAGCCAAGTAGCGTGAAGGATGACTGCCCTACGGGTTGTAAACTTCTTTTATAAAGGAATAAAGTGAGGCACGTGTGCCTTTTTGTATGTACTTTATGAATAAGGATCGGCTAACTCCGTGCCAGCAGCCGCGGTAATACGGAGGATCCGAGCGTTATCCGGATTTATTGGGTTTAAAGGGTGCGCAGGCGGT", 
+            .quality = "HIHIIIIIHIIHGHHIHHIIIIIIIIIIIIIIIHHIIIIIHHIHIIIIIGIHIIIIHHHHHHGHIHIIIIIIIIIIIGHIIIIIGHIIIIHIIHIHHIIIIHIHHIIIIIIIGIIIIIIIHIIIIIGHIIIIHIIIH?DGHEEGHIIIIIIIIIIIHIIHIIIHHIIHIHHIHCHHIIHGIHHHHHHH<GG?B@EHDE-BEHHHII5B@GHHF?CGEHHHDHIHIIH" }, 
+        .{ 
+            .name = "HWI-D00523:240:HF3WGBCXX:1:1101:5586:3020 1:N:0:CTGTAG", 
+            .sequence = "TGGGGAATATTGGGCAATGGGCGGAAGCCTGACCCAGCAACGCCGCGTGAAGGAAGAAGGCCCTCGGGTTGTAAACTTCTTTTCTATAGGACGAAGAAGTGACGGTACTATAGGAATAAGCCACGGCTAACTACGTGCCAGCAGCCGCGGTAATACGTAGGTGGCGAGCGTTATCCGGATTTACTGGGTGTAAAGGGCGTGTAGGCGGGAGAGCAAGTCAGATGTGA", 
+            .quality = "EHEHGIIIHIGGHGHFEHHEHGCHHGGHIIIGHHIFHHGHHIEHIIIIGHHHHIIGIHGHGGHHHHHCHHHICCHHHHH@HHIIIGCEHGHHGHCHHGDGCGCCEHEEHGIIGHHGHHHIGGFCFHHIHIGIIIHGGHFHIIFEFHIIHIGDHCHFHHGCHCE?GHIIH<C?GHHHHIGFDEHHHHEC88@<@@EHHHIHDH-@HHCDHHDDEHH6@F6@6@@EH@@" }, 
+        .{ 
+            .name = "HWI-D00523:240:HF3WGBCXX:1:1101:2860:2149 1:N:0:CTGTAG", 
+            .sequence = "TAGGGAATATTGCTCAATGGGGGAAACCCTGAAGCAGCAACGCCGCGTGGAGGATGAAGGTTTTAGGATTGTAAACTCCTTTTGTGAGAGAAGATTATGACGGTATCTCACGAATAAGCTCCGGCTAACTACGTGCCAGCAGCCGCGGTAATACGTAGGGAGCGAGCGTTGTCCGGAATTACTGGGTGTAAAGGGAGCGTAGGCGGGACTGCAAGTTGGGTGTCAAA", 
+            .quality = "HGHHGHIIHIIIIIIHHHIIHIIIIIHGHCHIHIIHIIHIIIIIIIIIHIGHIEHIHIIG<FEHHHIHHIIIIIIHIFFHHHHIIIIIHHHHGHFEHHIHHHIHEHHFHHHIHIIIIIIIHIHDHHHHHEHHIIGIIHHIIGHHHIIGDDAGGHHFHHHIHICHHHGH,GHHHHGCEHEG?@6@G?-@>HHHHHHHDEH<@H-@CDD>:E?@GHEF-@E:@H+@-@@" 
+        } 
+    };
+
+    for (test_cases) |case| {
+        var record = try fqReader.next();
+        try std.testing.expectEqualStrings(case.name, record.?.name);
+        try std.testing.expectEqualStrings(case.quality, record.?.qual);
+        try std.testing.expectEqualStrings(case.sequence, record.?.seq);
+    }
+    // zig fmt: on
+}

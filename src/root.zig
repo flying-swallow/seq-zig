@@ -1,4 +1,3 @@
-const fa = @import("fa.zig");
 
 
 pub const SeqContianer = enum {
@@ -27,11 +26,11 @@ pub const SeqContianer = enum {
     }
 };
 
-
-
+const fa = @import("fa.zig");
 pub const FQWriter = fa.FQWriter;
 pub const FQReader = fa.FQReader;
 
 test {
-    
+    _ = fa;    
+
 }
