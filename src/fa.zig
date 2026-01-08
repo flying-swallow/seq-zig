@@ -1,155 +1,142 @@
 const std = @import("std");
 const seq = @import("root.zig");
 
-pub const FQWriterOptions = struct {
+pub fn faWriteRecord(writer: *std.Io.Writer, slice: struct {
+    name: []const u8,
+    seq: []const u8,
+}, options: struct {
     line_ending: enum {
         LF,
         CRLF,
     } = .LF,
-};
+}) !void {
+    const line_ending = switch (options.line_ending) {
+        .LF => "\n",
+        .CRLF => "\r\n",
+    };
 
-pub const FQWriter = struct {
-    writer: *std.Io.Writer,
-    options: FQWriterOptions = .{},
-    pub fn init(writer: *std.Io.Writer, options: FQWriterOptions) FQWriter {
-        return .{ .writer = writer, .options = options };
-    }
+    try writer.writeByte('>');
+    try writer.writeAll(slice.name);
+    try writer.writeAll(line_ending);
 
-    pub fn writeRecord(self: *FQWriter, slice: struct {
-        name: []const u8,
-        qual: []const u8,
-        seq: []const u8,
-    }) !void {
-        const line_ending = switch (self.options.line_ending) {
-            .LF => "\n",
-            .CRLF => "\r\n",
-        };
+    try writer.writeAll(slice.seq);
+    try writer.writeAll(line_ending);
+}
 
-        try self.writer.writeByte('@');
-        try self.writer.writeAll(slice.name);
-        try self.writer.writeAll(line_ending);
+pub fn fqWriteRecord(writer: *std.Io.Writer, slice: struct {
+    name: []const u8,
+    qual: []const u8,
+    seq: []const u8,
+}, options: struct {
+    line_ending: enum {
+        LF,
+        CRLF,
+    } = .LF,
+}) !void {
+    const line_ending = switch (options.line_ending) {
+        .LF => "\n",
+        .CRLF => "\r\n",
+    };
 
-        try self.writer.writeAll(slice.seq);
-        try self.writer.writeAll(line_ending);
+    try writer.writeByte('@');
+    try writer.writeAll(slice.name);
+    try writer.writeAll(line_ending);
 
-        try self.writer.writeByte('+');
-        try self.writer.writeAll(line_ending);
+    try writer.writeAll(slice.seq);
+    try writer.writeAll(line_ending);
 
-        try self.writer.writeAll(slice.qual);
-        try self.writer.writeAll(line_ending);
-    }
-};
+    try writer.writeByte('+');
+    try writer.writeAll(line_ending);
 
-pub const FQReader = struct {
-    pub const FQRecord = struct { name: []const u8 = &.{}, seq: []const u8 = &.{}, qual: []const u8 = &.{} };
-    arena: std.heap.ArenaAllocator,
-    reader: *std.Io.Reader,
+    try writer.writeAll(slice.qual);
+    try writer.writeAll(line_ending);
+}
 
-    pub fn init(allocator: std.mem.Allocator, reader: *std.Io.Reader) FQReader {
-        return .{ .arena = .init(allocator), .reader = reader };
-    }
 
-    pub fn deinit(self: *FQReader) void {
-        self.arena.deinit();
-    }
+pub fn takeFqSequence(reader: *std.Io.Reader, name: *std.Io.Writer, sequence: *std.Io.Writer, qual: *std.Io.Writer) !bool {
+    const format: seq.Format = switch (try reader.takeByte()) {
+        '@' => .fq,
+        '>' => .fa,
+        else => |c| {
+            std.debug.print("Invalid first byte: {d}\n", .{c});
+            return error.RecordParseError;
+        },
+    };
+    try name.writeAll(std.mem.trimEnd(u8, try reader.takeDelimiterInclusive('\n'), &std.ascii.whitespace));
 
-    pub fn next(self: *FQReader) !?FQRecord {
-        _ = self.arena.reset(.retain_capacity);
-        const format: seq.SeqContianer = switch (try self.reader.takeByte()) {
-            '@' => .fastq,
-            '>' => .fasta,
-            else => |c| {
-                std.debug.print("Invalid first byte: {d}\n", .{c});
-                return error.RecordParseError;
-            },
-        };
-        var name_writer: std.Io.Writer.Allocating = .init(self.arena.allocator());
-        var seq_writer: std.Io.Writer.Allocating = .init(self.arena.allocator());
-        var qual_writer: std.Io.Writer.Allocating = .init(self.arena.allocator());
-        _ = try self.reader.streamDelimiterEnding(&name_writer.writer, '\n');
-        self.reader.toss(1);
+    var qual_line_count: usize = 0;
 
-        var qual_line_count: usize = 0;
+    var seq_line_count: usize = 0;
+    var seq_number_bases: usize = 0;
+    var qual_number_bases: usize = 0;
 
-        var seq_line_count: usize = 0;
-        var seq_number_bases: usize = 0;
-        var qual_number_bases: usize = 0;
+    var bases_per_line_expected: ?usize = null;
 
-        var bases_per_line_expected: ?usize = null;
+    var bases_per_line: usize = 0;
 
-        var bases_per_line: usize = 0;
-
-        while (true) {
-            switch (self.reader.peekByte() catch |err| switch (err) {
-                error.EndOfStream => return null,
-                else => return err,
-            }) {
-                '+' => {
-                    _ = try self.reader.takeDelimiter('\n');
-                    while (true) {
-                        if (qual_number_bases == seq_number_bases) {
-                            if (seq_line_count != qual_line_count) return error.RecordParseError;
-                            return .{
-                                .name = name_writer.written(),
-                                .seq = seq_writer.written(),
-                                .qual = qual_writer.written(),
-                            };
-                        } else if (qual_number_bases > seq_number_bases) {
-                            return error.RecordParseError;
-                        }
-
-                        if (qual_line_count > 0) {
-                            if (bases_per_line_expected) |count| {
-                                if (bases_per_line != count) return error.RecordParseError;
-                            } else return error.RecordParseError;
-                        }
-
-                        qual_line_count += 1;
-
-                        const last_len = qual_writer.written().len;
-                        _ = try self.reader.streamDelimiterEnding(&qual_writer.writer, '\n');
-                        self.reader.toss(1);
-                        qual_writer.shrinkRetainingCapacity(std.mem.trimEnd(u8, qual_writer.written(), &std.ascii.whitespace).len);
-
-                        bases_per_line = (qual_writer.written().len - last_len);
-                        qual_number_bases += bases_per_line;
-                    }
-                },
-                '>' => {
-                    if (format == .fastq)
+    while (true) {
+        switch (reader.peekByte() catch |err| switch (err) {
+            error.EndOfStream => return false, // end of stream no more records
+            else => return err,
+        }) {
+            '+' => {
+                _ = try reader.takeDelimiter('\n');
+                while (true) {
+                    if (qual_number_bases == seq_number_bases) {
+                        if (seq_line_count != qual_line_count) return error.RecordParseError;
+                        return true;
+                    } else if (qual_number_bases > seq_number_bases) {
                         return error.RecordParseError;
-                    return .{
-                        .name = name_writer.written(),
-                        .seq = seq_writer.written(),
-                        .qual = qual_writer.written(),
-                    };
-                },
-                else => {},
-            }
-            if (seq_line_count > 0) {
-                if (bases_per_line_expected) |count| {
-                    if (bases_per_line != count) return error.RecordParseError;
-                } else bases_per_line_expected = bases_per_line;
-            }
-            seq_line_count += 1;
+                    }
 
-            const prev_written_len = seq_writer.written().len;
-            _ = try self.reader.streamDelimiterEnding(&seq_writer.writer, '\n');
-            self.reader.toss(1);
-            seq_writer.shrinkRetainingCapacity(std.mem.trimEnd(u8, seq_writer.written(), &std.ascii.whitespace).len);
+                    if (qual_line_count > 0) {
+                        if (bases_per_line_expected) |count| {
+                            if (bases_per_line != count) return error.RecordParseError;
+                        } else return error.RecordParseError;
+                    }
 
-            bases_per_line = (seq_writer.written().len - prev_written_len);
-            seq_number_bases += bases_per_line;
+                    qual_line_count += 1;
+
+                    var qual_slice = std.mem.trimEnd(u8, try reader.takeDelimiterInclusive('\n'), &std.ascii.whitespace);
+                    try qual.writeAll(qual_slice);
+
+                    bases_per_line = qual_slice.len;
+                    qual_number_bases += bases_per_line;
+                }
+            },
+            '>' => {
+                if (format == .fq)
+                    return error.RecordParseError;
+                // we finished reading this record
+                return true;
+            },
+            else => {},
         }
+        if (seq_line_count > 0) {
+            if (bases_per_line_expected) |count| {
+                if (bases_per_line != count) return error.RecordParseError;
+            } else bases_per_line_expected = bases_per_line;
+        }
+        seq_line_count += 1;
+
+        var seq_slice = std.mem.trimEnd(u8, try reader.takeDelimiterInclusive('\n'), &std.ascii.whitespace);
+        try sequence.writeAll(seq_slice);
+        //const prev_written_len = seq_writer.written().len;
+        //_ = try reader.streamDelimiterEnding(&seq_writer.writer, '\n');
+        //reader.toss(1);
+        //seq_writer.shrinkRetainingCapacity(std.mem.trimEnd(u8, seq_writer.written(), &std.ascii.whitespace).len);
+
+        bases_per_line = seq_slice.len;
+        seq_number_bases += bases_per_line;
     }
-};
+}
 
 test "read fq scanner" {
     const file = @embedFile("./test/t1.fq");
     const TestCase = struct { name: []const u8, sequence: []const u8, quality: []const u8 };
     var reader: std.Io.Reader = .fixed(file[0..]);
-    var fqReader: FQReader = .init(std.testing.allocator, &reader);
-    defer fqReader.deinit();
+    //var fqReader: FqReader = .init(std.testing.allocator, &reader);
+    //defer fqReader.deinit();
 
     // zig fmt: off
     const test_cases =
@@ -169,11 +156,24 @@ test "read fq scanner" {
         } 
     };
 
+    var name: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var sequence: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    var qual: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer name.deinit();
+    defer sequence.deinit();
+    defer qual.deinit();
+
+    //var sequence: FqSequence = .{};
+    //defer sequence.deinit(std.testing.allocator);
     for (test_cases) |case| {
-        var record = try fqReader.next();
-        try std.testing.expectEqualStrings(case.name, record.?.name);
-        try std.testing.expectEqualStrings(case.quality, record.?.qual);
-        try std.testing.expectEqualStrings(case.sequence, record.?.seq);
+        try std.testing.expect(try takeFqSequence(&reader, &name.writer, &sequence.writer, &qual.writer));
+        try std.testing.expectEqualStrings(case.name, name.written());
+        try std.testing.expectEqualStrings(case.quality, qual.written());
+        try std.testing.expectEqualStrings(case.sequence, sequence.written());
+        
+        name.clearRetainingCapacity();
+        sequence.clearRetainingCapacity();
+        qual.clearRetainingCapacity();
     }
     // zig fmt: on
 }

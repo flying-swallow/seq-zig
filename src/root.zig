@@ -1,36 +1,44 @@
-
-
-pub const SeqContianer = enum {
+pub const Format = enum {
     unknown,
-    fastq, //  text-based format for nucleotide sequences 
-    fasta,
+    fa,
+    fq, //  text-based format for nucleotide sequences
+    fai,
+    fqi,
     bam,
+    bai,
+    cram,
+    crai,
+    vcf,
+    bcf,
+    csi,
+    gzi,
+    tbi,
+    bed,
 
-    fn name(con: SeqContianer) [] const u8 {
-        switch(con) {
-            .fastq => "FASTQ",
-            .fasta => "FASTA",
-            .bam => "BAM"
+    fn name(con: Format) []const u8 {
+        switch (con) {
+            .fq => "FASTQ",
+            .fa => "FASTA",
+            .bam => "BAM",
         }
     }
 
-    pub const fastq_ext= [_]u8{"fq", "fasta"};
-    pub const fasta_ext = [_]u8{"fa", "fastq"};
+    pub const fastq_ext = [_]u8{ "fq", "fasta" };
+    pub const fasta_ext = [_]u8{ "fa", "fastq" };
 
-    fn ext(con: SeqContianer) [][] const u8 {
+    fn ext(con: Format) [][]const u8 {
         switch (con) {
-            .fasta => fasta_ext,
-            .fastq => fastq_ext,
+            .fa => fasta_ext,
+            .fq => fastq_ext,
         }
         return {};
     }
 };
 
-const fa = @import("fa.zig");
-pub const FQWriter = fa.FQWriter;
-pub const FQReader = fa.FQReader;
+pub const fa = @import("fa.zig");
+pub const fai = @import("fai.zig");
 
 test {
-    _ = fa;    
-
+    _ = fa;
+    _ = fai;
 }
