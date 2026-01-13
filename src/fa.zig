@@ -121,10 +121,6 @@ pub fn takeFqSequence(reader: *std.Io.Reader, name: *std.Io.Writer, sequence: *s
 
         var seq_slice = std.mem.trimEnd(u8, try reader.takeDelimiterInclusive('\n'), &std.ascii.whitespace);
         try sequence.writeAll(seq_slice);
-        //const prev_written_len = seq_writer.written().len;
-        //_ = try reader.streamDelimiterEnding(&seq_writer.writer, '\n');
-        //reader.toss(1);
-        //seq_writer.shrinkRetainingCapacity(std.mem.trimEnd(u8, seq_writer.written(), &std.ascii.whitespace).len);
 
         bases_per_line = seq_slice.len;
         seq_number_bases += bases_per_line;
@@ -163,8 +159,6 @@ test "read fq scanner" {
     defer sequence.deinit();
     defer qual.deinit();
 
-    //var sequence: FqSequence = .{};
-    //defer sequence.deinit(std.testing.allocator);
     for (test_cases) |case| {
         try std.testing.expect(try takeFqSequence(&reader, &name.writer, &sequence.writer, &qual.writer));
         try std.testing.expectEqualStrings(case.name, name.written());
