@@ -1,5 +1,4 @@
 const std = @import("std");
-const seq = @import("root.zig");
 
 pub fn faWriteRecord(writer: *std.Io.Writer, slice: struct {
     name: []const u8,
@@ -54,7 +53,8 @@ pub fn fqWriteRecord(writer: *std.Io.Writer, slice: struct {
 
 
 pub fn takeFqSequence(reader: *std.Io.Reader, name: *std.Io.Writer, sequence: *std.Io.Writer, qual: *std.Io.Writer) !bool {
-    const format: seq.Format = switch (try reader.takeByte()) {
+    const RecordKind = enum { fa, fq };
+    const format: RecordKind = switch (try reader.takeByte()) {
         '@' => .fq,
         '>' => .fa,
         else => |c| {

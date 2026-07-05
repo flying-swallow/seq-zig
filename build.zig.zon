@@ -1,7 +1,7 @@
 .{
-    .name = .seq_zig,
+    .name = .zbio,
     .version = "0.0.0",
-    .fingerprint = 0x71869439d02a0574,
+    .fingerprint = 0x7a72c8d4d421029,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
     },
