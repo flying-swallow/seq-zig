@@ -97,7 +97,7 @@ pub fn takeFqSequence(reader: *std.Io.Reader, name: *std.Io.Writer, sequence: *s
 
                     qual_line_count += 1;
 
-                    var qual_slice = std.mem.trimEnd(u8, try reader.takeDelimiterInclusive('\n'), &std.ascii.whitespace);
+                    const qual_slice = std.mem.trimEnd(u8, try reader.takeDelimiterInclusive('\n'), &std.ascii.whitespace);
                     try qual.writeAll(qual_slice);
 
                     bases_per_line = qual_slice.len;
@@ -119,7 +119,7 @@ pub fn takeFqSequence(reader: *std.Io.Reader, name: *std.Io.Writer, sequence: *s
         }
         seq_line_count += 1;
 
-        var seq_slice = std.mem.trimEnd(u8, try reader.takeDelimiterInclusive('\n'), &std.ascii.whitespace);
+        const seq_slice = std.mem.trimEnd(u8, try reader.takeDelimiterInclusive('\n'), &std.ascii.whitespace);
         try sequence.writeAll(seq_slice);
 
         bases_per_line = seq_slice.len;
