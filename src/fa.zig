@@ -8,6 +8,9 @@ pub fn faWriteRecord(writer: *std.Io.Writer, slice: struct {
         LF,
         CRLF,
     } = .LF,
+    /// Wrap the sequence at this many bases per line. 0 disables wrapping and
+    /// writes the whole sequence on one line.
+    line_width: usize = 0,
 }) !void {
     const line_ending = switch (options.line_ending) {
         .LF => "\n",
@@ -18,7 +21,19 @@ pub fn faWriteRecord(writer: *std.Io.Writer, slice: struct {
     try writer.writeAll(slice.name);
     try writer.writeAll(line_ending);
 
-    try writer.writeAll(slice.seq);
+    if (options.line_width == 0 or slice.seq.len == 0) {
+        try writer.writeAll(slice.seq);
+    } else {
+        // Break into `line_width`-sized chunks joined by the line ending, with
+        // no trailing separator (the record's final line ending is written
+        // below). Matches seqkit's byteutil.WrapByteSlice.
+        var i: usize = 0;
+        while (i < slice.seq.len) : (i += options.line_width) {
+            if (i != 0) try writer.writeAll(line_ending);
+            const end = @min(i + options.line_width, slice.seq.len);
+            try writer.writeAll(slice.seq[i..end]);
+        }
+    }
     try writer.writeAll(line_ending);
 }
 
@@ -170,4 +185,33 @@ test "read fq scanner" {
         qual.clearRetainingCapacity();
     }
     // zig fmt: on
+}
+
+test "faWriteRecord line wrapping" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+
+    // Default: no wrapping, whole sequence on one line.
+    try faWriteRecord(&out.writer, .{ .name = "s1", .seq = "ACGTACGTAC" }, .{});
+    try std.testing.expectEqualStrings(">s1\nACGTACGTAC\n", out.written());
+
+    // Wrap at a width that divides evenly: no blank trailing line.
+    out.clearRetainingCapacity();
+    try faWriteRecord(&out.writer, .{ .name = "s2", .seq = "ACGTACGT" }, .{ .line_width = 4 });
+    try std.testing.expectEqualStrings(">s2\nACGT\nACGT\n", out.written());
+
+    // Wrap with a remainder on the last line.
+    out.clearRetainingCapacity();
+    try faWriteRecord(&out.writer, .{ .name = "s3", .seq = "ACGTACGTAC" }, .{ .line_width = 4 });
+    try std.testing.expectEqualStrings(">s3\nACGT\nACGT\nAC\n", out.written());
+
+    // CRLF line ending with wrapping.
+    out.clearRetainingCapacity();
+    try faWriteRecord(&out.writer, .{ .name = "s4", .seq = "ACGTAC" }, .{ .line_width = 4, .line_ending = .CRLF });
+    try std.testing.expectEqualStrings(">s4\r\nACGT\r\nAC\r\n", out.written());
+
+    // Empty sequence: header then an empty line, regardless of width.
+    out.clearRetainingCapacity();
+    try faWriteRecord(&out.writer, .{ .name = "s5", .seq = "" }, .{ .line_width = 4 });
+    try std.testing.expectEqualStrings(">s5\n\n", out.written());
 }

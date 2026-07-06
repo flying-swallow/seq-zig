@@ -3,6 +3,7 @@ pub const fai = @import("fai.zig");
 pub const sam = @import("sam.zig");
 pub const bam = @import("bam.zig");
 pub const alphabet = @import("alphabet.zig");
+pub const stats = @import("stats.zig");
 
 test {
     _ = fa;
@@ -10,4 +11,5 @@ test {
     _ = sam;
     _ = bam;
     _ = alphabet;
+    _ = stats;
 }
