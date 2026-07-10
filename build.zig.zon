@@ -2,9 +2,16 @@
     .name = .zbio,
     .version = "0.0.0",
     .fingerprint = 0x7a72c8d4d421029,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0-dev.931",
     .dependencies = .{
+        // Dev-only: used solely by the `zig build bench` step. `.lazy = true`
+        // keeps the published `zbio` library dependency-free — zbench is fetched
+        // only when the bench step actually needs it.
+        .zbench = .{
+            .url = "https://github.com/hendriknielaender/zBench/archive/refs/tags/v0.14.1.tar.gz",
+            .hash = "zbench-0.14.1-YTdc781OAQCR6wxqkgAwm9bG4TnFGzm8c9aE-ZPiTAU1",
+            .lazy = true,
+        },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src" },
 }
-

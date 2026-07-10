@@ -1,5 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
+const simd = @import("simd.zig");
 
 // Sequence-length statistics and base-composition counting, modeled on
 // seqkit's `util.LengthStats` and `byteutil.CountBytes`. These are the
@@ -291,16 +292,42 @@ pub fn countAny(seq: []const u8, set: []const u8) usize {
     return n;
 }
 
-/// Count G/C bases (both cases) in `seq`.
+/// Count G/C bases (both cases) in `seq`. SIMD-accelerated (see `simd.zig`).
 pub fn gcCount(seq: []const u8) usize {
-    var n: usize = 0;
-    for (seq) |c| {
-        switch (c) {
-            'g', 'G', 'c', 'C' => n += 1,
+    return simd.countGcBytes(seq);
+}
+
+/// GC ratio counter over every `step`-th base (rust-bio `seq_analysis::gc`).
+/// The contiguous `step == 1` case uses the SIMD G/C counter; strided steps stay
+/// scalar (an every-`step`-th gather is not a contiguous reduction).
+fn gcnContent(seq: []const u8, step: usize) f32 {
+    if (step == 1) {
+        const count = simd.countGcBytes(seq);
+        // Empty input yields NaN (0/0), matching rust-bio.
+        return @as(f32, @floatFromInt(count)) / @as(f32, @floatFromInt(seq.len));
+    }
+    var l: usize = 0;
+    var count: usize = 0;
+    var i: usize = 0;
+    while (i < seq.len) : (i += step) {
+        l += 1;
+        switch (seq[i]) {
+            'g', 'G', 'c', 'C' => count += 1,
             else => {},
         }
     }
-    return n;
+    // Empty input yields NaN (0/0), matching rust-bio.
+    return @as(f32, @floatFromInt(count)) / @as(f32, @floatFromInt(l));
+}
+
+/// Ratio of bases that are G or C (both cases). Complexity O(n).
+pub fn gcContent(seq: []const u8) f32 {
+    return gcnContent(seq, 1);
+}
+
+/// Ratio of every 3rd base (positions 0, 3, 6, ...) that is G or C.
+pub fn gc3Content(seq: []const u8) f32 {
+    return gcnContent(seq, 3);
 }
 
 // Tests ---------------------------------------------------------------------
@@ -375,4 +402,13 @@ test "countAny and gcCount" {
     try testing.expectEqual(@as(usize, 2), countAny("ACGT-N.n", "Nn"));
     try testing.expectEqual(@as(usize, 2), countAny("A C-GT", "- ")); // one space, one dash
     try testing.expectEqual(@as(usize, 0), countAny("ACGT", "Xx"));
+}
+
+test "gcContent / gc3Content" {
+    try testing.expectApproxEqAbs(@as(f32, 0.0), gcContent("ATAT"), 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), gcContent("ATGC"), 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 1.0), gcContent("GCGC"), 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 2.0 / 8.0), gcContent("GATATACA"), 1e-6);
+    // step 3 over "GATATACA" -> {G, A, C} -> 2/3
+    try testing.expectApproxEqAbs(@as(f32, 2.0 / 3.0), gc3Content("GATATACA"), 1e-6);
 }

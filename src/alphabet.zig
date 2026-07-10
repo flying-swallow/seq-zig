@@ -532,3 +532,119 @@ test "quality encodings" {
     // High Phred scores round-trip through Solexa.
     try testing.expectEqual(@as(Phred, 30), solexaToPhred(phredToSolexa(30)));
 }
+
+// Rank transform & q-grams --------------------------------------------------
+
+/// Maps alphabet symbols to their lexicographic rank (ascending byte order) and
+/// enumerates rank-packed q-grams. Ported from rust-bio's `alphabets::RankTransform`.
+/// This is distinct from `Alphabet.index` (position within a fixed `letters`
+/// string): ranks here are assigned by ascending byte value over the symbol set.
+pub const RankTransform = struct {
+    ranks: [256]u8 = @splat(0),
+    present: [256]bool = @splat(false),
+    len: usize = 0,
+
+    /// Build a transform over the given symbol bytes. Ranks are assigned in
+    /// ascending byte order (0, 1, 2, ...).
+    pub fn init(symbols: []const u8) RankTransform {
+        var rt = RankTransform{};
+        for (symbols) |s| rt.present[s] = true;
+        var r: u8 = 0;
+        var c: usize = 0;
+        while (c < 256) : (c += 1) {
+            if (rt.present[c]) {
+                rt.ranks[c] = r;
+                r += 1;
+            }
+        }
+        rt.len = r;
+        return rt;
+    }
+
+    /// Rank of symbol `a`. Asserts `a` is in the alphabet.
+    pub fn get(self: *const RankTransform, a: u8) u8 {
+        std.debug.assert(self.present[a]);
+        return self.ranks[a];
+    }
+
+    /// Bits needed to encode the largest rank: ceil(log2(len)). Suitable as the
+    /// `width` for `bitenc.BitEnc`.
+    pub fn getWidth(self: *const RankTransform) u6 {
+        if (self.len <= 1) return 0;
+        return @intCast(std.math.log2_int_ceil(usize, self.len));
+    }
+
+    /// Transform `text` into an owned slice of ranks. Caller frees.
+    pub fn transform(self: *const RankTransform, gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+        const out = try gpa.alloc(u8, text.len);
+        for (text, 0..) |c, i| out[i] = self.get(c);
+        return out;
+    }
+
+    /// Iterate q-grams of `text`, each encoded as a usize by packing symbol
+    /// ranks in `getWidth()` bits. Asserts `q > 0` and `q * width <= 64`.
+    pub fn qgrams(self: *const RankTransform, q: u32, text: []const u8) QGrams {
+        std.debug.assert(q > 0);
+        const bits = self.getWidth();
+        const shift: usize = @as(usize, bits) * q;
+        std.debug.assert(shift <= @bitSizeOf(usize));
+        const mask: usize = if (shift >= @bitSizeOf(usize))
+            std.math.maxInt(usize)
+        else
+            (@as(usize, 1) << @intCast(shift)) - 1;
+        var g = QGrams{ .ranks = self, .text = text, .pos = 0, .bits = bits, .mask = mask, .qgram = 0 };
+        var i: u32 = 0;
+        while (i < q - 1) : (i += 1) _ = g.next();
+        return g;
+    }
+};
+
+/// Iterator over rank-packed q-grams. See `RankTransform.qgrams`.
+pub const QGrams = struct {
+    ranks: *const RankTransform,
+    text: []const u8,
+    pos: usize,
+    bits: u6,
+    mask: usize,
+    qgram: usize,
+
+    pub fn next(self: *QGrams) ?usize {
+        if (self.pos >= self.text.len) return null;
+        const c = self.text[self.pos];
+        self.pos += 1;
+        const b = self.ranks.get(c);
+        self.qgram = ((self.qgram << self.bits) | b) & self.mask;
+        return self.qgram;
+    }
+};
+
+test "RankTransform transform" {
+    const rt = RankTransform.init("ACGTacgt");
+    const out = try rt.transform(testing.allocator, "aAcCgGtT");
+    defer testing.allocator.free(out);
+    try testing.expectEqualSlices(u8, &.{ 4, 0, 5, 1, 6, 2, 7, 3 }, out);
+    try testing.expectEqual(@as(u8, 0), rt.get('A'));
+    try testing.expectEqual(@as(u8, 7), rt.get('t'));
+}
+
+test "RankTransform getWidth" {
+    try testing.expectEqual(@as(u6, 2), RankTransform.init("ACGT").getWidth());
+    try testing.expectEqual(@as(u6, 3), RankTransform.init("ACGTN").getWidth());
+}
+
+test "RankTransform qgrams" {
+    const rt = RankTransform.init("ACGTacgt");
+    var g = rt.qgrams(2, "ACGT");
+    try testing.expectEqual(@as(?usize, 1), g.next());
+    try testing.expectEqual(@as(?usize, 10), g.next());
+    try testing.expectEqual(@as(?usize, 19), g.next());
+    try testing.expectEqual(@as(?usize, null), g.next());
+}
+
+test "RankTransform qgram shift-left no overflow (q*bits == 64)" {
+    const rt = RankTransform.init("ACTG");
+    var buf: [400]u8 = undefined;
+    for (0..100) |i| @memcpy(buf[i * 4 ..][0..4], "ACTG");
+    var g = rt.qgrams(@bitSizeOf(usize) / 2, &buf); // q=32, bits=2
+    _ = g.next(); // must not panic on the 1<<64 mask edge
+}

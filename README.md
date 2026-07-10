@@ -20,7 +20,20 @@ Everything is re-exported from the root module (`@import("zbio")`):
 | `fai`       | `.fai` index parsing |
 | `sam`       | SAM text reader — header + alignment records (CIGAR, optional fields, FLAG) |
 | `bam`       | BAM reader **and** writer, including the BGZF block codec |
-| `alphabet`  | Sequence alphabets (DNA/RNA/protein), complement / reverse-complement, IUPAC `Nucleotide` & `AminoAcid` enums, and FASTQ quality encodings |
+| `alphabet`  | Sequence alphabets (DNA/RNA/protein), complement / reverse-complement, IUPAC `Nucleotide` & `AminoAcid` enums, FASTQ quality encodings, and `RankTransform` / q-grams |
+| `stats`     | Length statistics (N50/L50, quartiles) and GC content / counts |
+| `bitenc`    | Fixed-width (1–8 bit) sequence bit-packing |
+| `scores`    | BLOSUM (30/45/62) and PAM (40/120/200/250) substitution matrices |
+| `orf`       | Forward-strand open reading frame finder |
+| `alignment` | `distance` (Hamming / Levenshtein / bounded) and `pairwise` (generalized Smith-Waterman: global / semiglobal / local, affine gaps) |
+| `pm`        | Exact pattern matching — Horspool, KMP, Shift-And, BNDM, BOM |
+| `index`     | Suffix array (+ LCP), BWT (`less` / `Occ`), and FM-index backward search |
+
+The `alignment`, `pm`, and `index` modules were ported from
+[rust-bio](https://github.com/rust-bio/rust-bio). Suffix arrays are built by
+prefix doubling (rather than rust-bio's SAIS); the result is identical since the
+suffix array is unique. Deferred for now: Myers approximate matching, the
+bidirectional FMD-index (SMEMs), and the sampled suffix array.
 
 ## Use it in your project
 
@@ -141,7 +154,18 @@ _ = ab.Encoding.sanger.decodeToPhred('I');         // 40
 ```sh
 zig build          # build the library + test artifact
 zig build test     # run the unit tests
+zig build bench    # run the benchmark suite (ReleaseFast)
 ```
+
+## Benchmarks
+
+Benchmarks use [zBench](https://github.com/hendriknielaender/zBench). It is a
+**dev-only, lazy dependency** — declared with `.lazy = true` in `build.zig.zon`,
+so it is fetched only when you run `zig build bench`. The published `zbio`
+library module stays dependency-free; `zig build test` never compiles or links
+zBench. The bench executable is always built in `ReleaseFast`, independent of
+`-Doptimize`, and reports throughput (MB/s, items/s) for both the format-IO code
+and the algorithm modules. Benchmark sources live in `bench/`.
 
 ## Not yet implemented
 

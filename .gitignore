@@ -1,4 +1,12 @@
 # Zig build artifacts
 zig-out/
 .zig-cache/
+zig-pkg/
+
+# Comparison harness: generated corpus, per-run results, Rust build tree.
+# Cargo.lock is committed (see bench/compare/rust) to freeze the rust-bio deps.
+bench/compare/corpus.bin
+bench/compare/*.tsv
+bench/compare/machine.txt
+bench/compare/rust/target/
 
